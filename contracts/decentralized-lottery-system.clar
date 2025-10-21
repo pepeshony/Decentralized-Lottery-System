@@ -11,6 +11,8 @@
 (define-constant ERR_LOTTERY_NOT_ENDED (err u109))
 (define-constant ERR_TOO_MANY_TICKETS (err u110))
 (define-constant ERR_INVALID_DURATION (err u111))
+(define-constant ERR_PRIZE_ALREADY_CLAIMED (err u112))
+(define-constant ERR_NO_PRIZE_TO_CLAIM (err u113))
 
 (define-data-var lottery-counter uint u0)
 (define-data-var ticket-price uint u1000000)
@@ -56,6 +58,28 @@
         player: principal,
     }
     { total-spent: uint }
+)
+
+(define-map player-rewards
+    {
+        lottery-id: uint,
+        player: principal,
+    }
+    {
+        prize-amount: uint,
+        is-claimed: bool,
+        claim-block: uint,
+    }
+)
+
+(define-map player-history
+    principal
+    {
+        total-lotteries-played: uint,
+        total-spent: uint,
+        total-won: uint,
+        total-claimed: uint,
+    }
 )
 
 (define-read-only (get-current-lottery-id)
@@ -246,6 +270,8 @@
                 })
             )
 
+            (update-player-history-on-purchase tx-sender ticket-cost)
+
             (ok new-ticket-number)
         )
     )
@@ -283,6 +309,15 @@
                     is-drawn: true,
                 })
             )
+
+            (map-set player-rewards {
+                lottery-id: id,
+                player: winner,
+            } {
+                prize-amount: winner-prize,
+                is-claimed: false,
+                claim-block: u0,
+            })
 
             (if (var-get auto-schedule-enabled)
                 (unwrap-panic (create-next-auto-lottery))
@@ -757,6 +792,41 @@
     )
 )
 
+(define-read-only (get-player-reward
+        (id uint)
+        (player principal)
+    )
+    (map-get? player-rewards {
+        lottery-id: id,
+        player: player,
+    })
+)
+
+(define-read-only (get-player-history (player principal))
+    (match (map-get? player-history player)
+        history (ok history)
+        (ok {
+            total-lotteries-played: u0,
+            total-spent: u0,
+            total-won: u0,
+            total-claimed: u0,
+        })
+    )
+)
+
+(define-read-only (is-prize-claimed
+        (id uint)
+        (player principal)
+    )
+    (match (map-get? player-rewards {
+        lottery-id: id,
+        player: player,
+    })
+        reward (get is-claimed reward)
+        false
+    )
+)
+
 (define-read-only (get-winner-info (id uint))
     (match (map-get? lotteries id)
         lottery (if (get is-drawn lottery)
@@ -826,7 +896,81 @@
                 })
             )
 
+            (update-player-history-on-purchase tx-sender total-cost)
+
             (ok tickets-to-buy)
         )
+    )
+)
+
+(define-public (claim-prize (id uint))
+    (let (
+            (reward (unwrap! (map-get? player-rewards {
+                lottery-id: id,
+                player: tx-sender,
+            }) ERR_NO_PRIZE_TO_CLAIM))
+            (prize-amount (get prize-amount reward))
+            (is-claimed (get is-claimed reward))
+            (current-history (match (map-get? player-history tx-sender)
+                history history
+                {
+                    total-lotteries-played: u0,
+                    total-spent: u0,
+                    total-won: u0,
+                    total-claimed: u0,
+                }
+            ))
+        )
+        (begin
+            (asserts! (not is-claimed) ERR_PRIZE_ALREADY_CLAIMED)
+            (asserts! (> prize-amount u0) ERR_NO_PRIZE_TO_CLAIM)
+
+            (try! (as-contract (stx-transfer? prize-amount tx-sender tx-sender)))
+
+            (map-set player-rewards {
+                lottery-id: id,
+                player: tx-sender,
+            } {
+                prize-amount: prize-amount,
+                is-claimed: true,
+                claim-block: stacks-block-height,
+            })
+
+            (map-set player-history tx-sender {
+                total-lotteries-played: (get total-lotteries-played current-history),
+                total-spent: (get total-spent current-history),
+                total-won: (+ (get total-won current-history) prize-amount),
+                total-claimed: (+ (get total-claimed current-history) prize-amount),
+            })
+
+            (ok {
+                claimed-amount: prize-amount,
+                claim-block: stacks-block-height,
+            })
+        )
+    )
+)
+
+(define-private (update-player-history-on-purchase
+        (player principal)
+        (amount uint)
+    )
+    (let (
+            (current-history (match (map-get? player-history player)
+                history history
+                {
+                    total-lotteries-played: u0,
+                    total-spent: u0,
+                    total-won: u0,
+                    total-claimed: u0,
+                }
+            ))
+        )
+        (map-set player-history player {
+            total-lotteries-played: (get total-lotteries-played current-history),
+            total-spent: (+ (get total-spent current-history) amount),
+            total-won: (get total-won current-history),
+            total-claimed: (get total-claimed current-history),
+        })
     )
 )
