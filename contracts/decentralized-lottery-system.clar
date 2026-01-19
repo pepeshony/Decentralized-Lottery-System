@@ -15,6 +15,7 @@
 (define-constant ERR_NO_PRIZE_TO_CLAIM (err u113))
 (define-constant ERR_TICKET_NOT_FOUND (err u114))
 (define-constant ERR_NOT_TICKET_OWNER (err u115))
+(define-constant ERR_CANNOT_GIFT_SELF (err u116))
 
  
 (define-data-var lottery-counter uint u0)
@@ -905,6 +906,67 @@
             (update-player-history-on-purchase tx-sender total-cost)
 
             (ok tickets-to-buy)
+        )
+    )
+)
+
+(define-public (gift-ticket (id uint) (recipient principal))
+    (let (
+            (lottery (unwrap! (map-get? lotteries id) ERR_LOTTERY_NOT_ACTIVE))
+            (current-ticket-count (get ticket-count (get-player-ticket-count id recipient)))
+            (ticket-cost (get ticket-price lottery))
+            (new-ticket-number (+ (get total-tickets lottery) u1))
+        )
+        (begin
+            (asserts! (is-lottery-active id) ERR_LOTTERY_NOT_ACTIVE)
+            (asserts! (not (is-eq tx-sender recipient)) ERR_CANNOT_GIFT_SELF)
+            (asserts! (< current-ticket-count (var-get max-tickets-per-player))
+                ERR_TOO_MANY_TICKETS
+            )
+            (asserts! (>= (stx-get-balance tx-sender) ticket-cost)
+                ERR_INSUFFICIENT_PAYMENT
+            )
+
+            (try! (stx-transfer? ticket-cost tx-sender (as-contract tx-sender)))
+
+            (map-set lottery-tickets {
+                lottery-id: id,
+                ticket-number: new-ticket-number,
+            } { owner: recipient }
+            )
+
+            (map-set player-tickets {
+                lottery-id: id,
+                player: recipient,
+            } { ticket-count: (+ current-ticket-count u1) }
+            )
+
+            (match (map-get? lottery-participants {
+                lottery-id: id,
+                player: recipient,
+            })
+                existing-participation (map-set lottery-participants {
+                    lottery-id: id,
+                    player: recipient,
+                } { total-spent: (+ (get total-spent existing-participation) ticket-cost) }
+                )
+                (map-set lottery-participants {
+                    lottery-id: id,
+                    player: recipient,
+                } { total-spent: ticket-cost }
+                )
+            )
+
+            (map-set lotteries id
+                (merge lottery {
+                    total-tickets: new-ticket-number,
+                    total-prize: (+ (get total-prize lottery) ticket-cost),
+                })
+            )
+
+            (update-player-history-on-purchase tx-sender ticket-cost)
+
+            (ok new-ticket-number)
         )
     )
 )
