@@ -16,6 +16,7 @@
 (define-constant ERR_TICKET_NOT_FOUND (err u114))
 (define-constant ERR_NOT_TICKET_OWNER (err u115))
 (define-constant ERR_CANNOT_GIFT_SELF (err u116))
+(define-constant ERR_INVALID_AMOUNT (err u117))
 
  
 (define-data-var lottery-counter uint u0)
@@ -967,6 +968,25 @@
             (update-player-history-on-purchase tx-sender ticket-cost)
 
             (ok new-ticket-number)
+        )
+    )
+)
+
+(define-public (sponsor-lottery (id uint) (amount uint))
+    (let (
+            (lottery (unwrap! (map-get? lotteries id) ERR_LOTTERY_NOT_ACTIVE))
+        )
+        (begin
+            (asserts! (is-lottery-active id) ERR_LOTTERY_NOT_ACTIVE)
+            (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+            (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+            (map-set lotteries id
+                (merge lottery {
+                    total-prize: (+ (get total-prize lottery) amount)
+                })
+            )
+            (update-player-history-on-purchase tx-sender amount)
+            (ok true)
         )
     )
 )
